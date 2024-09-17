@@ -15,15 +15,16 @@
 #include "string.h"
 #include "driver/gpio.h"
 #include "esp_spiffs.h"
-#include <sys/stat.h>
-#include <sys/unistd.h>
 
+
+//defing the UART_ports for ESP32
 #define TXD_PIN (GPIO_NUM_17)
 #define RXD_PIN (GPIO_NUM_16)
 
 //receive buffer
 static const int RX_BUF_SIZE = 512;
 uint8_t RxData[1024];
+
 //transmit handle for resume and suspending task
 TaskHandle_t txtaskhandle;
 
@@ -33,8 +34,7 @@ static volatile uint32_t bytes_transmitted = 0;
 static volatile uint32_t bytes_received = 0;
 
 
-
-
+//UART initialization
 void init(void)
 {
     const uart_config_t uart_config = {
@@ -45,117 +45,17 @@ void init(void)
         .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
         .source_clk = UART_SCLK_DEFAULT,
     };
-    // We won't use a buffer for sending data.
+    // RX buffer is only used, Tx is not buffered
     uart_driver_install(UART_NUM_2, RX_BUF_SIZE*2, 0, 0, NULL, 0);
     uart_param_config(UART_NUM_2, &uart_config);
     uart_set_pin(UART_NUM_2, TXD_PIN, RXD_PIN, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
 }
 
-
-
-static void tx_task(void *arg)
+void SPIFFS_init(void)
 {
-	 static const char *TX_TASK_TAG = "TX_TASK";
-	 
-	 esp_log_level_set(TX_TASK_TAG, ESP_LOG_INFO);
-   // Buffer to hold chunks of data
-        char buffer[128]; // Chunk size for transmission
-        size_t bytesRead = 0;
-    while (1) {
-		//opening the file in SPIFFS for sending over UART transmit
-		FILE *f = fopen("/spiffs/TEST.txt", "r");
-        if (f == NULL) {
-            ESP_LOGE(TX_TASK_TAG, "Failed to open file for reading");
-            return;
-            }else ESP_LOGE(TX_TASK_TAG, "Opened file from flash");
-    	while ((bytesRead = fread(buffer, 1, sizeof(buffer), f)) > 0) 
-    	{
-        const int txBytes = uart_write_bytes(UART_NUM_2, buffer, bytesRead);
-          bytes_transmitted += txBytes; //updating for per second count
-          ESP_LOGI(TX_TASK_TAG, "Wrote %d bytes", txBytes);
-        //  vTaskDelay(2000/portTICK_PERIOD_MS);
-        }
-        
-    /*   f = fopen("/spiffs/TEST.txt", "w"); // Open file in write mode to clear it
-        if (f != NULL) {
-          fclose(f); // Closing immediately clears the file
-           ESP_LOGI(TX_TASK_TAG, "File cleared after transmission");
-       }*/
-       vTaskSuspend(txtaskhandle);
-    }
-    
-}
-
-static void rx_task(void *arg)
-{
-    static const char *RX_TASK_TAG = "RX_TASK";
-    esp_log_level_set(RX_TASK_TAG, ESP_LOG_INFO);
- 
-    while (1) {
-        const int rxBytes = uart_read_bytes(UART_NUM_2, RxData, RX_BUF_SIZE, 200 / portTICK_PERIOD_MS);
-        if (rxBytes > 0) {
-            RxData[rxBytes] = 0;
-            bytes_received += rxBytes;//updating for per second count
-            ESP_LOGI(RX_TASK_TAG, "Read %d bytes", rxBytes);
-            
-             FILE *f = fopen("/spiffs/TEST.txt", "a"); 
-            if (f == NULL) {
-                ESP_LOGE(RX_TASK_TAG, "Failed to open file for writing");
-            } else {
-                fwrite(RxData, sizeof(char), rxBytes, f);
-                fclose(f); 
-                   ESP_LOGI(RX_TASK_TAG, "Data written to SPIFFS");
-            }
-            vTaskResume(txtaskhandle);
-        }
-         
-    }
-}
-
-void report_timer_callback(TimerHandle_t xTimer)
-{
+	static const char *TAG = "FILESYSTEM";//log for filesystem
 	
-    static uint32_t last_bytes_transmitted = 0;
-    static uint32_t last_bytes_received = 0;
-    
-    
-    //updated transist and receive rates 
-    uint32_t transmitted_rate = bytes_transmitted - last_bytes_transmitted;
-    uint32_t received_rate = bytes_received - last_bytes_received;
-    
-ESP_LOGI("DATA_RATE", "Transmission_rate: %" PRIu32 ", Reception_rate: %" PRIu32, transmitted_rate, received_rate);
-    
-    //updating count to get per second count the next rotation
-    last_bytes_transmitted = bytes_transmitted;
-    last_bytes_received = bytes_received;
-}
-
-
-/*
-static void idle_task(void *arg)
-{
-    while (1) {
-        if ((eTaskGetState(txtaskhandle) == eSuspended)&&(!file_flag))
-        {
-            // Check if destination file exists before deleting
-    struct stat st;
-    if (stat("/spiffs/TEST.txt", &st) == 0) {
-        // Delete it if it exists
-        unlink("/spiffs/TEST.txt");
-        file_flag = 1;//changing flag
-    }else  ESP_LOGI("IDLE_TASK","file deleted");
-                      
-            }
-        vTaskDelay(pdMS_TO_TICKS(1000));  // Check every second
-    }
-}
-*/
-
-static const char *TAG = "FILESYSTEM";
-void app_main(void)
-{
-	
-	//creating partition structure
+		//creating partition structure
 	esp_vfs_spiffs_conf_t conf = {
       .base_path = "/spiffs",
       .partition_label = NULL,
@@ -183,19 +83,150 @@ esp_err_t ret = esp_vfs_spiffs_register(&conf);
         ESP_LOGI(TAG, "Partition size: total: %d, used: %d", total, used);
     }
     
+    //reading exisitiing file in the flaash
     ESP_LOGI(TAG, "reading file");
-    FILE* f = fopen("/spiffs/TEST.txt", "r");
+    FILE* f = fopen("/spiffs/TEST.txt", "r");//'r' for read operation
     
     if (f == NULL) {
-        ESP_LOGE(TAG, "Failed to open file for reading");
+        ESP_LOGE(TAG, "Failed to open file for reading");//logging error condition
         return;
         }
-	 char line[64];
-    fgets(line, sizeof(line), f);
-    fclose(f);
-    ESP_LOGI(TAG, "Read from file: '%s'", line);
+        //printing the existing content in the flash
+	 char line[64];//array to hold the contents in flasj
+    fgets(line, sizeof(line), f);//data from the file to array
+    fclose(f);//closing the file for future use
+    ESP_LOGI(TAG, "Read from file: '%s'", line);//logging the contents of the file
+	
+}
+
+//Transmission task
+static void tx_task(void *arg)
+{
+	//terminal tags for displaying commands of TX
+	 static const char *TX_TASK_TAG = "TX_TASK";
+	 esp_log_level_set(TX_TASK_TAG, ESP_LOG_INFO);
+	 
+   // Buffer to hold chunks of data
+        char buffer[128]; // Chunk size for transmission
+        size_t bytesRead = 0;
+        
+    while (1) {
+		
+		//opening the file in SPIFFS for sending over UART transmit
+		FILE *f = fopen("/spiffs/TEST.txt", "r");
+        if (f == NULL) {
+            ESP_LOGE(TX_TASK_TAG, "Failed to open file for reading");
+            return;
+            }else ESP_LOGE(TX_TASK_TAG, "Opened file from flash");
+            
+            
+      //reading data from the file and checking reception of data      
+    	while ((bytesRead = fread(buffer, 1, sizeof(buffer), f)) > 0) 
+    	{
+        const int txBytes = uart_write_bytes(UART_NUM_2, buffer, bytesRead);//transmitting data in buffer
+        
+          bytes_transmitted += txBytes; //updating for per second count
+         //transmission longs 
+          ESP_LOGI(TX_TASK_TAG, "Wrote %d bytes", txBytes);
+        //  vTaskDelay(2000/portTICK_PERIOD_MS);
+        }
+        
+    /* clearing the file in the flash post usage    
+       f = fopen("/spiffs/TEST.txt", "w"); // Open file in write mode to clear it
+        if (f != NULL) {
+          fclose(f); // Closing immediately clears the file
+           ESP_LOGI(TX_TASK_TAG, "File cleared after transmission");
+       }*/
+       vTaskSuspend(txtaskhandle);//resumes when there is an incoming data in rXbuffer
+    }
     
-    init();
+}
+
+
+//reception task
+static void rx_task(void *arg)
+{
+	//terminal tags for displaying commands of TX
+    static const char *RX_TASK_TAG = "RX_TASK";
+    esp_log_level_set(RX_TASK_TAG, ESP_LOG_INFO);
+ 
+    while (1) {
+		
+		//receiving data in the buffer
+        const int rxBytes = uart_read_bytes(UART_NUM_2, RxData, RX_BUF_SIZE, 200 / portTICK_PERIOD_MS);
+        //if there is received data
+        if (rxBytes > 0) {
+            RxData[rxBytes] = 0;//ending the last element in the buffer end line character '0'
+            bytes_received += rxBytes;//updating for per second count
+           
+            ESP_LOGI(RX_TASK_TAG, "Read %d bytes", rxBytes);//receptionlogs
+            
+            
+            //opening file system to update data
+             FILE *f = fopen("/spiffs/TEST.txt", "a"); //type is "a" for appending data
+            if (f == NULL) {
+                ESP_LOGE(RX_TASK_TAG, "Failed to open file for writing");//file not found condition
+            } else {
+                fwrite(RxData, sizeof(char), rxBytes, f);//writing received data in flash 
+                fclose(f); //closing the file
+                   ESP_LOGI(RX_TASK_TAG, "Data written to SPIFFS");//file write logs as a part of Recepion
+            }
+            vTaskResume(txtaskhandle);//resuming the tx task post reception of data
+        }
+         
+    }
+}
+
+
+//data per second counter 
+void report_timer_callback(TimerHandle_t xTimer)
+{
+//static variable to hold data out of function call	
+    static uint32_t last_bytes_transmitted = 0;
+    static uint32_t last_bytes_received = 0;
+    
+    
+    //updated transist and receive rates 
+    uint32_t transmitted_rate = bytes_transmitted - last_bytes_transmitted;
+    uint32_t received_rate = bytes_received - last_bytes_received;
+    
+    //logs of data per sec
+ESP_LOGI("DATA_RATE", "Transmission_rate/sec: %" PRIu32 ", Reception_rate/sec: %" PRIu32, transmitted_rate, received_rate);
+    
+    //updating count to get per second count the next rotation
+    last_bytes_transmitted = bytes_transmitted;
+    last_bytes_received = bytes_received;
+}
+
+
+/*
+//idle state file system delete
+static void idle_task(void *arg)
+{
+    while (1) {
+        if ((eTaskGetState(txtaskhandle) == eSuspended)&&(!file_flag))
+        {
+            // Check if destination file exists before deleting
+    struct stat st;
+    if (stat("/spiffs/TEST.txt", &st) == 0) {
+        // Delete it if it exists
+        unlink("/spiffs/TEST.txt");
+        file_flag = 1;//changing flag
+    }else  ESP_LOGI("IDLE_TASK","file deleted");
+                      
+            }
+        vTaskDelay(pdMS_TO_TICKS(1000));  // Check every second
+    }
+}
+*/
+
+
+void app_main(void)
+{
+	
+	SPIFFS_init();//flash partiton creation and checking
+
+    init();//UART init
  
  //Receive task with high priorty than TX task
     xTaskCreate(rx_task, "uart_rx_task", 1024 * 2, NULL, configMAX_PRIORITIES - 1, NULL);
