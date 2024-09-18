@@ -24,3 +24,5 @@ Task explanation :
 8. python script for transmitting the data from the PC terminal is made
 
 9. TTL converter is used for communicating between the UART2 of the ESP32 and PC.
+
+![Firmware Architecture](C:\Users\Abinaya\workspace\UART_FLASH\NYMBLE_FIRMWARE_TASK.png)
